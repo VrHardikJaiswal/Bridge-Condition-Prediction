@@ -1,136 +1,79 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-from datetime import date
 
-# ==========================================================
-# 1. PAGE CONFIGURATION
-# ==========================================================
-
+# =========================================================
+# PAGE CONFIGURATION
+# =========================================================
 st.set_page_config(
     page_title="Bridge Condition Assessment",
     page_icon="🌉",
     layout="wide"
 )
 
-st.title("Bridge Condition Assessment System")
+st.title("Bridge Condition Assessment")
 st.write(
-    "An Artificial Neural Network-based application for "
-    "predicting bridge condition using National Bridge "
-    "Inventory (NBI) characteristics."
+    "Predict bridge condition using the saved Artificial Neural Network "
+    "trained on the 2025 National Bridge Inventory dataset."
 )
 
-st.divider()
+MODEL_PATH = "best_bridge_condition_model.sav"
 
-
-# ==========================================================
-# 2. LOAD TRAINED MODEL
-# ==========================================================
-
-@st.cache_resource
-def load_model():
-    return joblib.load("best_bridge_condition_model.sav")
-
-
-try:
-    package = load_model()
-
-    model = package["model"]
-    scaler = package["scaler"]
-    feature_columns = package["feature_columns"]
-    label_encoder = package["label_encoder"]
-
-except Exception as e:
-    st.error(f"Unable to load model package: {e}")
-    st.stop()
-
-
-# Check that the saved model matches the intended pipeline.
-
-if len(feature_columns) != 36:
-    st.error(
-        "The saved model does not match the intended "
-        "36-feature pipeline.\n\n"
-        f"Features found: {len(feature_columns)}\n\n"
-        "Please rerun Step 17, the subsequent training "
-        "and scaling cells, and the model-saving cell. "
-        "Then upload the newly generated .sav file."
-    )
-    st.stop()
-
-if model.n_features_in_ != len(feature_columns):
-    st.error("ANN input dimension does not match saved feature columns.")
-    st.stop()
-
-if scaler.n_features_in_ != len(feature_columns):
-    st.error("Scaler input dimension does not match saved feature columns.")
-    st.stop()
-
-
-# ==========================================================
-# 3. FEATURE INFORMATION
-# ==========================================================
-
-NUMERIC_FEATURES = [
+# These are the exact nine columns stored in the uploaded model.
+EXPECTED_FEATURES = [
     "LAT_016",
     "LONG_017",
     "YEAR_BUILT_027",
+    "STRUCTURE_KIND_043A",
+    "STRUCTURE_TYPE_043B",
     "STRUCTURE_LEN_MT_049",
     "ADT_029",
-    "PERCENT_ADT_TRUCK_109"
+    "PERCENT_ADT_TRUCK_109",
+    "DATE_OF_INSPECT_090",
 ]
 
-STRUCTURE_KIND = "STRUCTURE_KIND_043A"
-STRUCTURE_TYPE = "STRUCTURE_TYPE_043B"
+# =========================================================
+# LOAD THE UPLOADED SAVED MODEL
+# =========================================================
+@st.cache_resource
+def load_model_package():
+    return joblib.load(MODEL_PATH)
 
-FEATURE_DESCRIPTIONS = {
-    "LAT_016": (
-        "Geographical latitude of the bridge. "
-        "Identifies its north-south position."
-    ),
-
-    "LONG_017": (
-        "Geographical longitude of the bridge. "
-        "Identifies its east-west position."
-    ),
-
-    "YEAR_BUILT_027": (
-        "Year in which the bridge was originally constructed. "
-        "Helps represent the age of the structure."
-    ),
-
-    "STRUCTURE_KIND_043A": (
-        "Broad classification of the bridge based on its "
-        "primary structural material or construction."
-    ),
-
-    "STRUCTURE_TYPE_043B": (
-        "Classification of the bridge's main structural design, "
-        "such as slab, girder, arch or truss."
-    ),
-
-    "STRUCTURE_LEN_MT_049": (
-        "Total length of the bridge, measured in metres."
-    ),
-
-    "ADT_029": (
-        "Average Daily Traffic: estimated average number "
-        "of vehicles crossing the bridge per day."
-    ),
-
-    "PERCENT_ADT_TRUCK_109": (
-        "Percentage of average daily traffic consisting "
-        "of trucks."
+try:
+    package = load_model_package()
+    model = package["model"]
+    scaler = package["scaler"]
+    feature_columns = list(package["feature_columns"])
+    label_encoder = package["label_encoder"]
+except FileNotFoundError:
+    st.error(
+        f"Could not find {MODEL_PATH}. Place the .sav file in the same "
+        "GitHub repository folder as app.py."
     )
-}
+    st.stop()
+except Exception as exc:
+    st.error(f"Could not load the saved model: {exc}")
+    st.stop()
 
+if feature_columns != EXPECTED_FEATURES:
+    st.error(
+        "The feature columns in this saved model do not match the "
+        "nine-feature model this application is designed for.\n\n"
+        f"Saved columns: {feature_columns}"
+    )
+    st.stop()
 
-# ==========================================================
-# 4. NBI STRUCTURE KIND CODE DESCRIPTIONS
-# ==========================================================
+if model.n_features_in_ != 9 or scaler.n_features_in_ != 9:
+    st.error(
+        "The ANN and scaler must both accept nine input features. "
+        "The uploaded model package does not meet this requirement."
+    )
+    st.stop()
 
+# =========================================================
+# NBI CODE DESCRIPTIONS
+# =========================================================
 STRUCTURE_KIND_LABELS = {
     0: "Other",
     1: "Concrete",
@@ -141,13 +84,8 @@ STRUCTURE_KIND_LABELS = {
     6: "Prestressed Concrete Continuous",
     7: "Wood or Timber",
     8: "Masonry",
-    9: "Aluminum / Wrought Iron / Cast Iron"
+    9: "Aluminum / Wrought Iron / Cast Iron",
 }
-
-
-# ==========================================================
-# 5. NBI STRUCTURE TYPE CODE DESCRIPTIONS
-# ==========================================================
 
 STRUCTURE_TYPE_LABELS = {
     0: "Other",
@@ -172,300 +110,263 @@ STRUCTURE_TYPE_LABELS = {
     19: "Culvert",
     20: "Mixed Types",
     21: "Segmental Box Girder",
-    22: "Channel Beam"
+    22: "Channel Beam",
 }
 
+# Categories observed in the uploaded model's training-data diagnostic.
+AVAILABLE_KIND_CODES = list(range(10))
+AVAILABLE_TYPE_CODES = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+    12, 13, 14, 15, 16, 17, 19, 20, 21, 22
+]
 
-# ==========================================================
-# 6. DETERMINE CATEGORIES PRESENT IN TRAINING DATA
-# ==========================================================
+FEATURE_HELP = {
+    "Latitude": (
+        "Geographical north-south position of the bridge. Enter decimal "
+        "degrees. The application converts it to the NBI packed coordinate "
+        "format used when the ANN was trained."
+    ),
+    "Longitude": (
+        "Geographical east-west position of the bridge. Enter decimal "
+        "degrees. The application converts it to the NBI packed coordinate "
+        "format used when the ANN was trained. Enter west longitudes as "
+        "negative decimal values; the NBI packed value is stored as positive."
+    ),
+    "Year Built": (
+        "Calendar year in which the bridge was originally constructed."
+    ),
+    "Structure Kind": (
+        "Broad material/construction classification. Select the numerical "
+        "NBI code; its meaning is displayed beside the code."
+    ),
+    "Structure Type": (
+        "Main structural design classification. Select the numerical NBI "
+        "code; its meaning is displayed beside the code."
+    ),
+    "Bridge Length": "Total structure length in metres.",
+    "Average Daily Traffic": (
+        "Average number of vehicles crossing the bridge per day."
+    ),
+    "Truck Traffic": (
+        "Percentage of average daily traffic made up of trucks. Enter 0–100."
+    ),
+    "Inspection Date": (
+        "Date of the inspection represented in the saved model as MMYY. "
+        "For example, February 2023 is stored as 223 and October 2019 as 1019."
+    ),
+}
 
-def get_available_codes(column, labels):
+# =========================================================
+# INPUT CONVERSION AND VALIDATION
+# =========================================================
+def decimal_to_nbi_coordinate(value, max_degrees):
+    """
+    Convert decimal degrees to the packed NBI DDMMSSss / DDDMMSSss
+    numeric representation seen in the model's training data.
 
-    prefix = column + "_"
+    Example:
+    40 degrees, 02 minutes, 25.16 seconds -> 40022516
+    88 degrees, 07 minutes, 13.46 seconds -> 88071346
+    """
+    value = abs(float(value))
 
-    codes = []
+    if value > max_degrees:
+        raise ValueError(
+            f"Coordinate must not exceed {max_degrees} degrees."
+        )
 
-    for feature in feature_columns:
-        if feature.startswith(prefix):
-            suffix = feature[len(prefix):]
+    degrees = int(value)
+    minutes_float = (value - degrees) * 60
+    minutes = int(minutes_float)
+    seconds = (minutes_float - minutes) * 60
 
-            try:
-                codes.append(int(suffix))
-            except ValueError:
-                pass
+    seconds_hundredths = int(round(seconds * 100))
 
-    # The first category is omitted by drop_first=True.
-    # The training data uses code 0 as its baseline.
-    codes.append(0)
+    # Handle rounding at the 60-second / 60-minute boundaries.
+    if seconds_hundredths >= 6000:
+        seconds_hundredths = 0
+        minutes += 1
 
-    return sorted(set(
-        code for code in codes if code in labels
-    ))
+    if minutes >= 60:
+        minutes = 0
+        degrees += 1
 
+    if degrees > max_degrees:
+        raise ValueError("Coordinate is outside the valid range.")
 
-kind_codes = get_available_codes(
-    STRUCTURE_KIND, STRUCTURE_KIND_LABELS
-)
-
-type_codes = get_available_codes(
-    STRUCTURE_TYPE, STRUCTURE_TYPE_LABELS
-)
-
-
-# ==========================================================
-# 7. FEATURE PREPARATION
-# ==========================================================
-
-def prepare_input(data):
-
-    prepared = pd.DataFrame(
-        0,
-        index=[0],
-        columns=feature_columns
+    return float(
+        degrees * 1_000_000
+        + minutes * 10_000
+        + seconds_hundredths
     )
 
-    # Numerical predictors
-    for col in NUMERIC_FEATURES:
 
-        if col not in feature_columns:
-            raise ValueError(
-                f"Required numerical feature missing: {col}"
-            )
-
-        prepared.loc[0, col] = float(data[col])
-
-    # Convert decimal coordinates to NBI microdegree format.
-    prepared.loc[0, "LAT_016"] = (
-        float(data["LAT_016"]) * 1000000
-    )
-
-    prepared.loc[0, "LONG_017"] = (
-        float(data["LONG_017"]) * 1000000
-    )
-
-    # One-hot encode Structure Kind using the training columns.
-    kind = int(data[STRUCTURE_KIND])
-
-    if kind not in kind_codes:
-        raise ValueError("Structure Kind not present in training data.")
-
-    kind_column = f"{STRUCTURE_KIND}_{kind}"
-
-    if kind != 0:
-        if kind_column not in feature_columns:
-            raise ValueError(f"Missing model feature: {kind_column}")
-
-        prepared.loc[0, kind_column] = 1
-
-    # One-hot encode Structure Type using the training columns.
-    structure_type = int(data[STRUCTURE_TYPE])
-
-    if structure_type not in type_codes:
-        raise ValueError("Structure Type not present in training data.")
-
-    type_column = f"{STRUCTURE_TYPE}_{structure_type}"
-
-    if structure_type != 0:
-        if type_column not in feature_columns:
-            raise ValueError(f"Missing model feature: {type_column}")
-
-        prepared.loc[0, type_column] = 1
-
-    return prepared[feature_columns]
+def make_inspection_date(month, year):
+    """Convert month/year to the numeric MMYY format used by the model."""
+    if month < 1 or month > 12:
+        raise ValueError("Inspection month must be between 1 and 12.")
+    if year < 2000 or year > 2024:
+        raise ValueError(
+            "Inspection year must be between 2000 and 2024, "
+            "matching the range observed in the saved model data."
+        )
+    return float(month * 100 + (year % 100))
 
 
-# ==========================================================
-# 8. INPUT VALIDATION
-# ==========================================================
+def validate_bridge(data):
+    if not -90 <= float(data["latitude"]) <= 90:
+        raise ValueError("Latitude must be between -90 and 90 degrees.")
 
-def validate_input(data):
+    if not -180 <= float(data["longitude"]) <= 180:
+        raise ValueError("Longitude must be between -180 and 180 degrees.")
 
-    latitude = float(data["LAT_016"])
-    longitude = float(data["LONG_017"])
+    if not 1800 <= int(data["year_built"]) <= 2025:
+        raise ValueError("Enter a valid construction year (1800–2025).")
 
-    year = int(data["YEAR_BUILT_027"])
-    length = float(data["STRUCTURE_LEN_MT_049"])
-    adt = float(data["ADT_029"])
-    truck = float(data["PERCENT_ADT_TRUCK_109"])
+    if int(data["structure_kind"]) not in AVAILABLE_KIND_CODES:
+        raise ValueError("Unsupported Structure Kind code.")
 
-    if not -90 <= latitude <= 90:
-        raise ValueError("Latitude must be between -90 and 90.")
+    if int(data["structure_type"]) not in AVAILABLE_TYPE_CODES:
+        raise ValueError("Unsupported Structure Type code.")
 
-    if not -180 <= longitude <= 180:
-        raise ValueError("Longitude must be between -180 and 180.")
-
-    if not 1800 <= year <= 2025:
-        raise ValueError("Enter a construction year between 1800 and 2025.")
-
-    if length <= 0:
+    if float(data["bridge_length"]) <= 0:
         raise ValueError("Bridge length must be greater than zero.")
 
-    if adt < 0:
+    if float(data["adt"]) < 0:
         raise ValueError("Average Daily Traffic cannot be negative.")
 
-    if not 0 <= truck <= 100:
-        raise ValueError("Truck traffic percentage must be between 0 and 100.")
-
-    if int(data[STRUCTURE_KIND]) not in kind_codes:
-        raise ValueError("Invalid Structure Kind code.")
-
-    if int(data[STRUCTURE_TYPE]) not in type_codes:
-        raise ValueError("Invalid Structure Type code.")
+    if not 0 <= float(data["truck_percentage"]) <= 100:
+        raise ValueError("Truck traffic must be between 0 and 100 percent.")
 
 
-# ==========================================================
-# 9. PREDICTION FUNCTION
-# ==========================================================
+def prepare_model_input(data):
+    validate_bridge(data)
+
+    row = {
+        "LAT_016": decimal_to_nbi_coordinate(data["latitude"], 90),
+        "LONG_017": decimal_to_nbi_coordinate(data["longitude"], 180),
+        "YEAR_BUILT_027": float(data["year_built"]),
+        "STRUCTURE_KIND_043A": float(data["structure_kind"]),
+        "STRUCTURE_TYPE_043B": float(data["structure_type"]),
+        "STRUCTURE_LEN_MT_049": float(data["bridge_length"]),
+        "ADT_029": float(data["adt"]),
+        "PERCENT_ADT_TRUCK_109": float(data["truck_percentage"]),
+        "DATE_OF_INSPECT_090": make_inspection_date(
+            int(data["inspection_month"]),
+            int(data["inspection_year"]),
+        ),
+    }
+
+    return pd.DataFrame([row], columns=feature_columns)
+
 
 def predict_bridge(data):
-
-    validate_input(data)
-
-    input_data = prepare_input(data)
-
-    scaled_data = scaler.transform(input_data)
-
-    prediction = model.predict(scaled_data)[0]
-
-    condition = label_encoder.inverse_transform(
-        [int(prediction)]
+    model_input = prepare_model_input(data)
+    scaled_input = scaler.transform(model_input)
+    encoded_prediction = model.predict(scaled_input)
+    predicted_label = label_encoder.inverse_transform(
+        np.asarray(encoded_prediction, dtype=int)
     )[0]
 
     confidence = None
-
     if hasattr(model, "predict_proba"):
-        probabilities = model.predict_proba(scaled_data)[0]
-        confidence = float(np.max(probabilities)) * 100
+        probabilities = model.predict_proba(scaled_input)[0]
+        confidence = float(np.max(probabilities) * 100)
 
-    return condition, confidence
+    return str(predicted_label), confidence
 
 
-# ==========================================================
-# 10. CONDITION INTERPRETATION
-# ==========================================================
-
-CONDITION_DETAILS = {
-    "G": {
-        "name": "Good Condition",
-        "description": (
-            "The predicted bridge condition is Good. "
-            "Routine inspection and preventive maintenance "
-            "remain important."
-        )
-    },
-
-    "F": {
-        "name": "Fair Condition",
-        "description": (
-            "The predicted bridge condition is Fair. "
-            "Further engineering inspection may be required "
-            "to identify deterioration and maintenance needs."
-        )
-    },
-
-    "P": {
-        "name": "Poor Condition",
-        "description": (
-            "The predicted bridge condition is Poor. "
-            "A detailed engineering assessment should be "
-            "considered to determine rehabilitation or "
-            "replacement requirements."
-        )
-    }
+# =========================================================
+# RESULT DISPLAY
+# =========================================================
+CONDITION_INFO = {
+    "G": (
+        "Good Condition",
+        "The model classifies this bridge as Good. Continue routine "
+        "inspection and preventive maintenance."
+    ),
+    "F": (
+        "Fair Condition",
+        "The model classifies this bridge as Fair. Review inspection "
+        "findings and assess maintenance needs."
+    ),
+    "P": (
+        "Poor Condition",
+        "The model classifies this bridge as Poor. A qualified bridge "
+        "engineer should review the structure and determine appropriate "
+        "inspection, rehabilitation, or replacement actions."
+    ),
 }
 
 
-def show_prediction(condition, confidence):
-
-    condition = str(condition)
-
-    details = CONDITION_DETAILS.get(
-        condition,
-        {
-            "name": f"Predicted Class: {condition}",
-            "description": "Refer to the NBI condition classification."
-        }
+def display_result(prediction, confidence):
+    title, description = CONDITION_INFO.get(
+        prediction,
+        (f"Predicted class: {prediction}", "See the model's class definition.")
     )
 
     st.subheader("Prediction Result")
 
-    if condition == "G":
-        st.success(details["name"])
-
-    elif condition == "F":
-        st.warning(details["name"])
-
-    elif condition == "P":
-        st.error(details["name"])
-
+    if prediction == "G":
+        st.success(title)
+    elif prediction == "F":
+        st.warning(title)
+    elif prediction == "P":
+        st.error(title)
     else:
-        st.info(details["name"])
+        st.info(title)
 
-    st.write(details["description"])
+    st.write(description)
 
     if confidence is not None:
-        st.metric(
-            "Model Prediction Confidence",
-            f"{confidence:.2f}%"
-        )
+        st.metric("Model confidence", f"{confidence:.2f}%")
 
     st.caption(
-        "This is a machine-learning prediction, not a "
-        "substitute for a professional bridge inspection."
+        "Model confidence is not a certified probability of structural "
+        "safety. This prediction is not a substitute for an engineering "
+        "inspection or official bridge-condition assessment."
     )
 
 
-# ==========================================================
-# 11. SINGLE BRIDGE PREDICTION
-# ==========================================================
+# =========================================================
+# MAIN APPLICATION TABS
+# =========================================================
+single_tab, batch_tab, guide_tab = st.tabs(
+    ["Single Bridge Prediction", "Batch CSV Prediction", "Feature Guide"]
+)
 
-tab1, tab2, tab3 = st.tabs([
-    "Single Bridge Assessment",
-    "Batch Assessment",
-    "Feature Guide"
-])
+# ---------------------------------------------------------
+# SINGLE BRIDGE
+# ---------------------------------------------------------
+with single_tab:
+    st.header("Predict the condition of one bridge")
 
-
-with tab1:
-
-    st.header("Assess an Individual Bridge")
-
-    st.write(
-        "Enter the bridge characteristics below. "
-        "Use the help descriptions to understand each variable."
-    )
-
-    with st.form("bridge_prediction_form"):
-
-        st.subheader("Geographical Information")
+    with st.form("single_bridge_form"):
+        st.subheader("Location")
 
         col1, col2 = st.columns(2)
-
         with col1:
             latitude = st.number_input(
-                "Latitude",
+                "Latitude (decimal degrees)",
                 min_value=-90.0,
                 max_value=90.0,
                 value=40.0,
                 format="%.6f",
-                help=FEATURE_DESCRIPTIONS["LAT_016"]
+                help=FEATURE_HELP["Latitude"],
             )
-
         with col2:
             longitude = st.number_input(
-                "Longitude",
+                "Longitude (decimal degrees)",
                 min_value=-180.0,
                 max_value=180.0,
                 value=-88.0,
                 format="%.6f",
-                help=FEATURE_DESCRIPTIONS["LONG_017"]
+                help=FEATURE_HELP["Longitude"],
             )
 
-        st.subheader("Construction Information")
+        st.subheader("Construction and structure")
 
         col1, col2 = st.columns(2)
-
         with col1:
             year_built = st.number_input(
                 "Year Built",
@@ -473,55 +374,40 @@ with tab1:
                 max_value=2025,
                 value=2000,
                 step=1,
-                help=FEATURE_DESCRIPTIONS["YEAR_BUILT_027"]
+                help=FEATURE_HELP["Year Built"],
             )
-
-        with col2:
             bridge_length = st.number_input(
                 "Bridge Length (metres)",
                 min_value=0.1,
                 value=100.0,
                 step=1.0,
-                help=FEATURE_DESCRIPTIONS["STRUCTURE_LEN_MT_049"]
+                help=FEATURE_HELP["Bridge Length"],
+            )
+        with col2:
+            kind_code = st.selectbox(
+                "Structure Kind",
+                AVAILABLE_KIND_CODES,
+                format_func=lambda x: f"{x} — {STRUCTURE_KIND_LABELS[x]}",
+                help=FEATURE_HELP["Structure Kind"],
+            )
+            type_code = st.selectbox(
+                "Structure Type",
+                AVAILABLE_TYPE_CODES,
+                format_func=lambda x: f"{x} — {STRUCTURE_TYPE_LABELS[x]}",
+                help=FEATURE_HELP["Structure Type"],
             )
 
-        st.subheader("Structural Classification")
-
-        kind_options = [
-            f"{code} — {STRUCTURE_KIND_LABELS[code]}"
-            for code in kind_codes
-        ]
-
-        selected_kind = st.selectbox(
-            "Structure Kind",
-            kind_options,
-            help=FEATURE_DESCRIPTIONS[STRUCTURE_KIND]
-        )
-
-        type_options = [
-            f"{code} — {STRUCTURE_TYPE_LABELS[code]}"
-            for code in type_codes
-        ]
-
-        selected_type = st.selectbox(
-            "Structure Type",
-            type_options,
-            help=FEATURE_DESCRIPTIONS[STRUCTURE_TYPE]
-        )
-
-        st.subheader("Traffic Information")
+        st.subheader("Traffic characteristics")
 
         col1, col2 = st.columns(2)
-
         with col1:
             adt = st.number_input(
                 "Average Daily Traffic (vehicles/day)",
                 min_value=0,
                 value=5000,
                 step=100,
-                help=FEATURE_DESCRIPTIONS["ADT_029"]
+                help=FEATURE_HELP["Average Daily Traffic"],
             )
-
         with col2:
             truck_percentage = st.number_input(
                 "Truck Traffic (%)",
@@ -529,279 +415,263 @@ with tab1:
                 max_value=100.0,
                 value=10.0,
                 step=0.5,
-                help=FEATURE_DESCRIPTIONS["PERCENT_ADT_TRUCK_109"]
+                help=FEATURE_HELP["Truck Traffic"],
+            )
+
+        st.subheader("Inspection date")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            inspection_month = st.selectbox(
+                "Inspection Month",
+                list(range(1, 13)),
+                format_func=lambda m: pd.Timestamp(2000, m, 1).strftime("%B"),
+                help=FEATURE_HELP["Inspection Date"],
+            )
+        with col2:
+            inspection_year = st.selectbox(
+                "Inspection Year",
+                list(range(2024, 1999, -1)),
+                index=5,  # default 2019
+                help=FEATURE_HELP["Inspection Date"],
             )
 
         submitted = st.form_submit_button(
             "Predict Bridge Condition",
-            use_container_width=True
+            use_container_width=True,
         )
 
     if submitted:
+        input_data = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "year_built": year_built,
+            "structure_kind": kind_code,
+            "structure_type": type_code,
+            "bridge_length": bridge_length,
+            "adt": adt,
+            "truck_percentage": truck_percentage,
+            "inspection_month": inspection_month,
+            "inspection_year": inspection_year,
+        }
 
         try:
-
-            kind_code = int(selected_kind.split(" — ")[0])
-            type_code = int(selected_type.split(" — ")[0])
-
-            bridge_data = {
-                "LAT_016": latitude,
-                "LONG_017": longitude,
-                "YEAR_BUILT_027": year_built,
-                "STRUCTURE_KIND_043A": kind_code,
-                "STRUCTURE_TYPE_043B": type_code,
-                "STRUCTURE_LEN_MT_049": bridge_length,
-                "ADT_029": adt,
-                "PERCENT_ADT_TRUCK_109": truck_percentage
-            }
-
-            condition, confidence = predict_bridge(bridge_data)
-
-            show_prediction(condition, confidence)
-
-        except Exception as e:
-            st.error(f"Prediction error: {e}")
+            prediction, confidence = predict_bridge(input_data)
+            display_result(prediction, confidence)
+        except Exception as exc:
+            st.error(f"Prediction could not be completed: {exc}")
 
 
-# ==========================================================
-# 12. BATCH PREDICTION
-# ==========================================================
-
-with tab2:
-
-    st.header("Batch Bridge Assessment")
+# ---------------------------------------------------------
+# BATCH CSV
+# ---------------------------------------------------------
+with batch_tab:
+    st.header("Predict conditions for multiple bridges")
 
     st.write(
-        "Upload a CSV containing multiple bridge records. "
-        "The application will predict the condition of each record."
+        "Upload a CSV using the template below. Coordinates must be in "
+        "decimal degrees. Inspection date is entered as separate month "
+        "and year columns."
     )
 
-    st.info(
-        "Use decimal latitude and longitude. "
-        "Use the original numerical NBI codes for Structure Kind "
-        "and Structure Type."
-    )
-
-    template = pd.DataFrame({
-        "LAT_016": [40.022516],
-        "LONG_017": [-88.071346],
-        "YEAR_BUILT_027": [1972],
-        "STRUCTURE_KIND_043A": [1],
-        "STRUCTURE_TYPE_043B": [2],
-        "STRUCTURE_LEN_MT_049": [18.8],
-        "ADT_029": [5000],
-        "PERCENT_ADT_TRUCK_109": [10.0]
+    template_df = pd.DataFrame({
+        "latitude": [40.037544],
+        "longitude": [-88.120406],
+        "year_built": [1972],
+        "structure_kind": [1],
+        "structure_type": [2],
+        "bridge_length": [18.8],
+        "adt": [5000],
+        "truck_percentage": [10.0],
+        "inspection_month": [3],
+        "inspection_year": [2024],
     })
 
     st.download_button(
-        "Download CSV Template",
-        template.to_csv(index=False),
+        "Download CSV template",
+        data=template_df.to_csv(index=False),
         file_name="bridge_input_template.csv",
-        mime="text/csv"
+        mime="text/csv",
     )
 
-    uploaded_file = st.file_uploader(
-        "Upload bridge dataset (CSV)",
-        type=["csv"]
+    uploaded_csv = st.file_uploader(
+        "Upload bridge records",
+        type=["csv"],
+        key="batch_upload",
     )
 
-    if uploaded_file is not None:
-
+    if uploaded_csv is not None:
         try:
+            batch_df = pd.read_csv(uploaded_csv)
 
-            batch_df = pd.read_csv(uploaded_file)
-
-            required_columns = [
-                "LAT_016",
-                "LONG_017",
-                "YEAR_BUILT_027",
-                "STRUCTURE_KIND_043A",
-                "STRUCTURE_TYPE_043B",
-                "STRUCTURE_LEN_MT_049",
-                "ADT_029",
-                "PERCENT_ADT_TRUCK_109"
-            ]
-
-            missing = [
-                col for col in required_columns
+            required_batch_columns = list(template_df.columns)
+            missing_columns = [
+                col for col in required_batch_columns
                 if col not in batch_df.columns
             ]
 
-            if missing:
+            if missing_columns:
                 st.error(
-                    "Missing required columns: "
-                    + ", ".join(missing)
+                    "Missing CSV columns: " + ", ".join(missing_columns)
                 )
-
+            elif batch_df.empty:
+                st.warning("The uploaded CSV contains no records.")
             else:
+                st.write("Uploaded records:")
+                st.dataframe(batch_df.head(10), use_container_width=True)
 
-                st.write("Uploaded dataset preview:")
-                st.dataframe(batch_df.head())
+                if st.button("Run batch predictions"):
+                    output_rows = []
+                    progress = st.progress(0.0)
+                    status = st.empty()
 
-                if st.button("Run Batch Predictions"):
-
-                    results = []
-                    errors = []
-
-                    progress = st.progress(0)
-
-                    for index, row in batch_df.iterrows():
+                    for i, row in batch_df.iterrows():
+                        record = row.to_dict()
 
                         try:
-
-                            condition, confidence = predict_bridge(
-                                row.to_dict()
+                            prediction, confidence = predict_bridge(record)
+                            title, _ = CONDITION_INFO.get(
+                                prediction,
+                                (prediction, "")
                             )
-
-                            results.append({
-                                "Predicted_Condition": condition,
-                                "Condition_Description": (
-                                    CONDITION_DETAILS.get(
-                                        str(condition), {}
-                                    ).get("name", str(condition))
-                                ),
+                            output_rows.append({
+                                "Predicted_Condition": prediction,
+                                "Condition_Description": title,
                                 "Confidence_Percentage": (
                                     round(confidence, 2)
                                     if confidence is not None else None
                                 ),
-                                "Prediction_Status": "Success"
+                                "Prediction_Status": "Success",
                             })
-
-                        except Exception as e:
-
-                            results.append({
+                        except Exception as exc:
+                            output_rows.append({
                                 "Predicted_Condition": None,
                                 "Condition_Description": None,
                                 "Confidence_Percentage": None,
-                                "Prediction_Status": str(e)
+                                "Prediction_Status": str(exc),
                             })
 
-                        progress.progress(
-                            (index + 1) / len(batch_df)
+                        progress.progress((i + 1) / len(batch_df))
+                        status.write(
+                            f"Processed {i + 1} of {len(batch_df)} records"
                         )
 
-                    result_df = pd.concat(
+                    results_df = pd.concat(
                         [
                             batch_df.reset_index(drop=True),
-                            pd.DataFrame(results)
+                            pd.DataFrame(output_rows),
                         ],
-                        axis=1
+                        axis=1,
                     )
 
-                    successful = (
-                        result_df["Prediction_Status"] == "Success"
+                    success_count = (
+                        results_df["Prediction_Status"] == "Success"
                     ).sum()
 
-                    st.subheader("Batch Prediction Summary")
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Total records", len(results_df))
+                    c2.metric("Successful predictions", int(success_count))
+                    c3.metric("Failed predictions", len(results_df) - int(success_count))
 
-                    col1, col2, col3 = st.columns(3)
-
-                    col1.metric("Total Bridges", len(result_df))
-                    col2.metric("Successful Predictions", successful)
-                    col3.metric("Failed Predictions", len(result_df) - successful)
-
-                    st.dataframe(
-                        result_df,
-                        use_container_width=True
-                    )
+                    st.dataframe(results_df, use_container_width=True)
 
                     st.download_button(
-                        "Download Prediction Results",
-                        result_df.to_csv(index=False),
+                        "Download prediction results",
+                        data=results_df.to_csv(index=False),
                         file_name="bridge_prediction_results.csv",
-                        mime="text/csv"
+                        mime="text/csv",
                     )
 
-        except Exception as e:
-            st.error(f"Unable to process CSV: {e}")
+        except Exception as exc:
+            st.error(f"Could not read the uploaded CSV: {exc}")
 
 
-# ==========================================================
-# 13. FEATURE GUIDE
-# ==========================================================
+# ---------------------------------------------------------
+# FEATURE GUIDE
+# ---------------------------------------------------------
+with guide_tab:
+    st.header("Feature Guide")
 
-with tab3:
-
-    st.header("Understanding the Model Features")
-
+    st.subheader("1. Latitude and Longitude")
     st.write(
-        "The model uses eight independent variables. "
-        "Two of these are categorical variables represented "
-        "through one-hot encoding during model training."
+        "These identify the bridge's geographical location. The form accepts "
+        "decimal degrees and converts them to the packed NBI coordinate "
+        "representation used by the saved model. The original training "
+        "examples include values such as 40022516 for latitude and 88071346 "
+        "for longitude."
     )
 
-    for feature, description in FEATURE_DESCRIPTIONS.items():
+    st.subheader("2. Year Built")
+    st.write(
+        "The calendar year in which the bridge was originally constructed. "
+        "It is used as a numerical predictor of bridge condition."
+    )
 
-        with st.expander(feature):
+    st.subheader("3. Structure Kind — NBI Item 43A")
+    st.write(
+        "This describes the broad structural material or construction type. "
+        "The numerical code is passed directly to the saved ANN."
+    )
 
-            st.write(description)
+    kind_table = pd.DataFrame([
+        {"Code": code, "Description": label}
+        for code, label in STRUCTURE_KIND_LABELS.items()
+    ])
+    st.dataframe(kind_table, hide_index=True, use_container_width=True)
 
-            if feature == STRUCTURE_KIND:
+    st.subheader("4. Structure Type — NBI Item 43B")
+    st.write(
+        "This describes the bridge's main structural design. The numerical "
+        "code is passed directly to the saved ANN."
+    )
 
-                st.markdown("**Structure Kind Codes**")
+    type_table = pd.DataFrame([
+        {"Code": code, "Description": label}
+        for code, label in STRUCTURE_TYPE_LABELS.items()
+    ])
+    st.dataframe(type_table, hide_index=True, use_container_width=True)
 
-                for code in kind_codes:
-                    st.write(
-                        f"**{code}** — {STRUCTURE_KIND_LABELS[code]}"
-                    )
+    st.subheader("5. Bridge Length")
+    st.write("Total structure length, measured in metres.")
 
-            elif feature == STRUCTURE_TYPE:
+    st.subheader("6. Average Daily Traffic (ADT)")
+    st.write(
+        "The estimated average number of vehicles crossing the bridge per day."
+    )
 
-                st.markdown("**Structure Type Codes**")
+    st.subheader("7. Percentage of Truck Traffic")
+    st.write(
+        "The percentage of average daily traffic represented by trucks."
+    )
 
-                for code in type_codes:
-                    st.write(
-                        f"**{code}** — {STRUCTURE_TYPE_LABELS[code]}"
-                    )
-
-            elif feature == "LAT_016":
-                st.write("Unit: Decimal degrees (latitude).")
-
-            elif feature == "LONG_017":
-                st.write("Unit: Decimal degrees (longitude).")
-
-            elif feature == "YEAR_BUILT_027":
-                st.write("Unit: Calendar year.")
-
-            elif feature == "STRUCTURE_LEN_MT_049":
-                st.write("Unit: Metres.")
-
-            elif feature == "ADT_029":
-                st.write("Unit: Vehicles per day.")
-
-            elif feature == "PERCENT_ADT_TRUCK_109":
-                st.write("Unit: Percentage (0–100).")
-
+    st.subheader("8. Date of Inspection — NBI Item 90")
+    st.write(
+        "This feature is included in the uploaded saved model. The model "
+        "stores it as MMYY: for example, 223 means February 2023, 823 means "
+        "August 2023, 1019 means October 2019, and 1224 means December 2024."
+    )
 
     st.divider()
-
-    st.subheader("Bridge Condition Classification")
-
-    st.markdown("""
-    | Code | Classification | Interpretation |
-    |---|---|---|
-    | G | Good | Bridge condition classified as Good |
-    | F | Fair | Bridge condition classified as Fair |
-    | P | Poor | Bridge condition classified as Poor |
-    """)
+    st.subheader("Predicted bridge-condition labels")
+    st.markdown(
+        """
+        | Label | Meaning |
+        |---|---|
+        | G | Good |
+        | F | Fair |
+        | P | Poor |
+        """
+    )
 
     st.caption(
-        "Condition labels are based on the classes learned by "
-        "the model's LabelEncoder. Predictions should be "
-        "validated by qualified bridge inspection professionals."
+        "The application reports the class predicted by the saved model. "
+        "Predictions are for research and educational use and are not an "
+        "official bridge inspection or structural-safety determination."
     )
 
 
-# ==========================================================
-# 14. MODEL DISCLAIMER
-# ==========================================================
-
 st.divider()
-
 st.caption(
-    "Research and educational application based on the "
-    "2025 National Bridge Inventory dataset. Predictions "
-    "represent model estimates and must not be treated as "
-    "official engineering safety assessments or substitutes "
-    "for physical bridge inspections."
+    "Model: saved ANN (MLPClassifier) | Dataset: 2025 National Bridge "
+    "Inventory | Input features: 9"
 )
