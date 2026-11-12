@@ -47,16 +47,20 @@ except Exception as e:
     st.stop()
 
 
-# Check that the saved model matches the intended pipeline.
+# Support both the existing 9-feature SAV file and the intended
+# 36-feature one-hot-encoded model. No model retraining is required
+# for the currently saved 9-feature package.
 
-if len(feature_columns) != 36:
+MODEL_MODE = "raw_9" if len(feature_columns) == 9 else (
+    "onehot_36" if len(feature_columns) == 36 else "unsupported"
+)
+
+if MODEL_MODE == "unsupported":
     st.error(
-        "The saved model does not match the intended "
-        "36-feature pipeline.\n\n"
-        f"Features found: {len(feature_columns)}\n\n"
-        "Please rerun Step 17, the subsequent training "
-        "and scaling cells, and the model-saving cell. "
-        "Then upload the newly generated .sav file."
+        "Unsupported model input format. "
+        f"Features found: {len(feature_columns)}. "
+        "This app supports the existing 9-feature model "
+        "and the intended 36-feature model."
     )
     st.stop()
 
@@ -123,6 +127,11 @@ FEATURE_DESCRIPTIONS = {
     "PERCENT_ADT_TRUCK_109": (
         "Percentage of average daily traffic consisting "
         "of trucks."
+    ),
+
+    "DATE_OF_INSPECT_090": (
+        "Month and year of the most recent bridge inspection, "
+        "stored by the existing 9-feature model in MMYY numeric format."
     )
 }
 
@@ -182,26 +191,29 @@ STRUCTURE_TYPE_LABELS = {
 
 def get_available_codes(column, labels):
 
-    prefix = column + "_"
+    # In the 9-feature model, categories are stored as raw numeric
+    # codes, so the dropdown offers the observed NBI code definitions.
+    if MODEL_MODE == "raw_9":
+        codes = list(labels.keys())
+        if column == STRUCTURE_TYPE:
+            codes = [code for code in codes if code != 18]
+        return codes
 
+    prefix = column + "_"
     codes = []
 
     for feature in feature_columns:
         if feature.startswith(prefix):
             suffix = feature[len(prefix):]
-
             try:
                 codes.append(int(suffix))
             except ValueError:
                 pass
 
-    # The first category is omitted by drop_first=True.
-    # The training data uses code 0 as its baseline.
+    # Baseline category omitted by drop_first=True.
     codes.append(0)
 
-    return sorted(set(
-        code for code in codes if code in labels
-    ))
+    return sorted(set(code for code in codes if code in labels))
 
 
 kind_codes = get_available_codes(
@@ -217,59 +229,78 @@ type_codes = get_available_codes(
 # 7. FEATURE PREPARATION
 # ==========================================================
 
+def decimal_to_nbi_coordinate(value):
+    """Convert decimal degrees to NBI DDMMSScc / DDDMMSScc integer format."""
+    value = abs(float(value))
+    degrees = int(value)
+    minutes_full = (value - degrees) * 60
+    minutes = int(minutes_full)
+    seconds = (minutes_full - minutes) * 60
+    seconds_hundredths = int(round(seconds * 100))
+
+    if seconds_hundredths >= 6000:
+        seconds_hundredths = 0
+        minutes += 1
+    if minutes >= 60:
+        minutes = 0
+        degrees += 1
+
+    return degrees * 1000000 + minutes * 10000 + seconds_hundredths
+
+
 def prepare_input(data):
 
     prepared = pd.DataFrame(
-        0,
+        0.0,
         index=[0],
         columns=feature_columns
     )
 
-    # Numerical predictors
+    if MODEL_MODE == "raw_9":
+        # Existing SAV file: nine original numerical NBI fields.
+        raw_values = {
+            "LAT_016": decimal_to_nbi_coordinate(data["LAT_016"]),
+            "LONG_017": decimal_to_nbi_coordinate(data["LONG_017"]),
+            "YEAR_BUILT_027": float(data["YEAR_BUILT_027"]),
+            "STRUCTURE_KIND_043A": float(data[STRUCTURE_KIND]),
+            "STRUCTURE_TYPE_043B": float(data[STRUCTURE_TYPE]),
+            "STRUCTURE_LEN_MT_049": float(data["STRUCTURE_LEN_MT_049"]),
+            "ADT_029": float(data["ADT_029"]),
+            "PERCENT_ADT_TRUCK_109": float(data["PERCENT_ADT_TRUCK_109"]),
+            "DATE_OF_INSPECT_090": float(data["DATE_OF_INSPECT_090"])
+        }
+
+        for col in feature_columns:
+            prepared.loc[0, col] = raw_values[col]
+
+        return prepared[feature_columns]
+
+    # Intended 36-feature model: decimal coordinates converted to
+    # microdegree representation, with one-hot categorical columns.
     for col in NUMERIC_FEATURES:
-
         if col not in feature_columns:
-            raise ValueError(
-                f"Required numerical feature missing: {col}"
-            )
-
+            raise ValueError(f"Required numerical feature missing: {col}")
         prepared.loc[0, col] = float(data[col])
 
-    # Convert decimal coordinates to NBI microdegree format.
-    prepared.loc[0, "LAT_016"] = (
-        float(data["LAT_016"]) * 1000000
-    )
+    prepared.loc[0, "LAT_016"] = float(data["LAT_016"]) * 1000000
+    prepared.loc[0, "LONG_017"] = float(data["LONG_017"]) * 1000000
 
-    prepared.loc[0, "LONG_017"] = (
-        float(data["LONG_017"]) * 1000000
-    )
-
-    # One-hot encode Structure Kind using the training columns.
     kind = int(data[STRUCTURE_KIND])
-
     if kind not in kind_codes:
         raise ValueError("Structure Kind not present in training data.")
-
     kind_column = f"{STRUCTURE_KIND}_{kind}"
-
     if kind != 0:
         if kind_column not in feature_columns:
             raise ValueError(f"Missing model feature: {kind_column}")
-
         prepared.loc[0, kind_column] = 1
 
-    # One-hot encode Structure Type using the training columns.
     structure_type = int(data[STRUCTURE_TYPE])
-
     if structure_type not in type_codes:
         raise ValueError("Structure Type not present in training data.")
-
     type_column = f"{STRUCTURE_TYPE}_{structure_type}"
-
     if structure_type != 0:
         if type_column not in feature_columns:
             raise ValueError(f"Missing model feature: {type_column}")
-
         prepared.loc[0, type_column] = 1
 
     return prepared[feature_columns]
@@ -312,6 +343,14 @@ def validate_input(data):
 
     if int(data[STRUCTURE_TYPE]) not in type_codes:
         raise ValueError("Invalid Structure Type code.")
+
+    if MODEL_MODE == "raw_9":
+        inspection_value = float(data["DATE_OF_INSPECT_090"])
+        if not 100 <= inspection_value <= 1224:
+            raise ValueError(
+                "Inspection date must use the model's MMYY numeric format "
+                "(for example, June 2020 = 620)."
+            )
 
 
 # ==========================================================
@@ -532,6 +571,25 @@ with tab1:
                 help=FEATURE_DESCRIPTIONS["PERCENT_ADT_TRUCK_109"]
             )
 
+        if MODEL_MODE == "raw_9":
+            st.subheader("Inspection Information")
+            date_col1, date_col2 = st.columns(2)
+            with date_col1:
+                inspection_month = st.selectbox(
+                    "Inspection Month",
+                    list(range(1, 13)),
+                    index=5,
+                    format_func=lambda m: date(2000, m, 1).strftime("%B")
+                )
+            with date_col2:
+                inspection_year = st.number_input(
+                    "Inspection Year",
+                    min_value=2000,
+                    max_value=2024,
+                    value=2020,
+                    step=1
+                )
+
         submitted = st.form_submit_button(
             "Predict Bridge Condition",
             use_container_width=True
@@ -554,6 +612,11 @@ with tab1:
                 "ADT_029": adt,
                 "PERCENT_ADT_TRUCK_109": truck_percentage
             }
+
+            if MODEL_MODE == "raw_9":
+                bridge_data["DATE_OF_INSPECT_090"] = (
+                    inspection_month * 100 + (inspection_year % 100)
+                )
 
             condition, confidence = predict_bridge(bridge_data)
 
@@ -582,7 +645,7 @@ with tab2:
         "and Structure Type."
     )
 
-    template = pd.DataFrame({
+    template_data = {
         "LAT_016": [40.022516],
         "LONG_017": [-88.071346],
         "YEAR_BUILT_027": [1972],
@@ -591,7 +654,12 @@ with tab2:
         "STRUCTURE_LEN_MT_049": [18.8],
         "ADT_029": [5000],
         "PERCENT_ADT_TRUCK_109": [10.0]
-    })
+    }
+
+    if MODEL_MODE == "raw_9":
+        template_data["DATE_OF_INSPECT_090"] = [620]
+
+    template = pd.DataFrame(template_data)
 
     st.download_button(
         "Download CSV Template",
@@ -621,6 +689,9 @@ with tab2:
                 "ADT_029",
                 "PERCENT_ADT_TRUCK_109"
             ]
+
+            if MODEL_MODE == "raw_9":
+                required_columns.append("DATE_OF_INSPECT_090")
 
             missing = [
                 col for col in required_columns
@@ -725,9 +796,14 @@ with tab3:
     st.header("Understanding the Model Features")
 
     st.write(
-        "The model uses eight independent variables. "
-        "Two of these are categorical variables represented "
-        "through one-hot encoding during model training."
+        (
+            "The currently loaded model uses nine original NBI variables, "
+            "including inspection date."
+            if MODEL_MODE == "raw_9"
+            else
+            "The model uses 36 prepared features, including one-hot encoded "
+            "Structure Kind and Structure Type variables."
+        )
     )
 
     for feature, description in FEATURE_DESCRIPTIONS.items():
@@ -771,6 +847,12 @@ with tab3:
 
             elif feature == "PERCENT_ADT_TRUCK_109":
                 st.write("Unit: Percentage (0–100).")
+
+            elif feature == "DATE_OF_INSPECT_090":
+                st.write(
+                    "Inspection date stored as MMYY numeric format "
+                    "(for example, June 2020 = 620)."
+                )
 
 
     st.divider()
